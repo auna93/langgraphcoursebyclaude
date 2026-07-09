@@ -5,7 +5,7 @@
  * runtime (se resuelve una vez al cargar el módulo).
  */
 
-import type { OllamaConfig } from "@/assistant/types";
+import type { OllamaConfig, WebLlmConfig } from "@/assistant/types";
 
 export interface AppConfig {
   ollama: OllamaConfig;
@@ -25,6 +25,8 @@ export interface AppConfig {
     /** 4 */
     topK: number;
   };
+  /** Delta M5 (ARCHITECTURE-M5-WEBLLM.md §9.6): fallback in-browser vía WebGPU. */
+  webllm: WebLlmConfig;
 }
 
 function readString(key: string, fallback: string): string {
@@ -39,6 +41,15 @@ function readNumber(key: string, fallback: number): number {
   if (value === undefined || value.length === 0) return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+/** "false" (case-sensitive, mismo mecanismo que el resto de CONFIG) desactiva;
+ *  cualquier otro valor (incl. ausente) resuelve al fallback. */
+function readBoolean(key: string, fallback: boolean): boolean {
+  const env = import.meta.env as Record<string, string | undefined>;
+  const value = env[key];
+  if (value === undefined || value.length === 0) return fallback;
+  return value !== "false";
 }
 
 export const CONFIG: AppConfig = {
@@ -58,5 +69,12 @@ export const CONFIG: AppConfig = {
   },
   rag: {
     topK: readNumber("VITE_RAG_TOPK", 4),
+  },
+  webllm: {
+    enabled: readBoolean("VITE_WEBLLM_ENABLED", true),
+    model: readString("VITE_WEBLLM_MODEL", "Qwen2.5-Coder-1.5B-Instruct-q4f16_1-MLC"),
+    modelUrl: readString("VITE_WEBLLM_MODEL_URL", ""),
+    modelLibUrl: readString("VITE_WEBLLM_MODEL_LIB_URL", ""),
+    modelSizeMb: readNumber("VITE_WEBLLM_MODEL_SIZE_MB", 950),
   },
 };

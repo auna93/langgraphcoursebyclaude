@@ -175,6 +175,11 @@ export const STRINGS = {
         `Se interrumpió la respuesta. Comprueba que Ollama sigue en marcha (\`${CMD_SERVE}\`) y vuelve a intentarlo.`,
       tuMensajeLabel: "Tú:",
       asistenteMensajeLabel: "Asistente:",
+      /** M5 (`docs/arch/ARCHITECTURE-M5-WEBLLM.md` §9.7, CA-44/CA-45): error de
+       *  streaming a mitad de respuesta vía el motor de respaldo WebGPU (análogo
+       *  a `errorStream` para Ollama, CA-26). */
+      errorStreamWebGpu:
+        "Se interrumpió la respuesta del modelo WebGPU local. Vuelve a intentarlo; si el problema persiste, recarga la página.",
     },
   },
   /** ADR-07: labels de estado del asistente Ollama, literales exactos (CA-18/19/20). */
@@ -189,5 +194,45 @@ export const STRINGS = {
     chatDeshabilitado: "El chat estará disponible cuando el asistente esté conectado.",
     /** Placeholder del input de chat (gancho de S8; el envío llega en S9). */
     chatPlaceholder: "Escribe tu pregunta…",
+    /** M5 (§9.7, CA-45): label del badge cuando `active === "webllm"`. Contiene
+     *  "WebGPU" y es distinto de los 3 literales existentes (sin colisión por
+     *  substring con "Conectado"). */
+    respaldoWebGpu: "Respaldo WebGPU activo",
+  },
+  /**
+   * M5 (`docs/arch/ARCHITECTURE-M5-WEBLLM.md` §9.7): `WebGpuFallbackCard`
+   * (oferta / progreso / cancelar / reintento del fallback in-browser,
+   * CA-40b/42/43).
+   */
+  webgpuFallback: {
+    ofertaTitulo: "Asistente de respaldo (WebGPU)",
+    ofertaDescripcion: (modelo: string, tamano: string) =>
+      `Ollama no está disponible. Puedes activar un modelo local en tu navegador (${modelo}). ` +
+      `Requiere una única descarga de ~${tamano}; quedará en la caché del navegador para las próximas sesiones.`,
+    activar: "Descargar y activar",
+    descargando: (pct: number) => `Descargando modelo WebGPU… ${pct} %`,
+    cancelar: "Cancelar",
+    canceladoAviso: "Descarga cancelada. Puedes volver a activarla cuando quieras.",
+    errorDescarga:
+      "No se pudo descargar o cargar el modelo WebGPU. Comprueba tu conexión y vuelve a intentarlo.",
+    /** Formato del tamaño estimado (CA-40b "en MB/GB"): mb < 1000 ⇒ `${mb} MB`;
+     *  mb ≥ 1000 ⇒ `${(mb/1000) con 1 decimal, coma decimal} GB` (p. ej. "1,6 GB"). */
+    tamano: (mb: number): string => {
+      if (mb < 1000) return `${mb} MB`;
+      const gb = (mb / 1000).toFixed(1).replace(".", ",");
+      return `${gb} GB`;
+    },
+  },
+  /**
+   * M5 (§9.7, CA-45): avisos de conmutación de motor en el hilo del chat
+   * (`chatStore.appendEngineNotice`, slice SF3). Ambos NOMBRAN el motor
+   * entrante.
+   */
+  avisoCambioMotor: {
+    aWebGpu: (modelo: string) =>
+      `Ollama no está disponible. A partir de ahora el asistente responde con el modelo local ` +
+      `${modelo} en tu navegador (WebGPU, modo respaldo); la calidad puede ser menor.`,
+    aOllama: (modelo: string) =>
+      `Ollama vuelve a estar disponible. El asistente vuelve a responder con ${modelo} vía Ollama.`,
   },
 } as const;
