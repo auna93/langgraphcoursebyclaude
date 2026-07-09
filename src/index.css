@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Modo claro con fondo crema oscuro (tonos cálidos beige). */
+    --background: 44 35% 83%;
+    --foreground: 28 25% 15%;
+    --border: 40 24% 71%;
+    --primary: 28 26% 20%;
+    --primary-foreground: 44 42% 92%;
+    --muted: 42 29% 78%;
+    --muted-foreground: 32 17% 37%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 222 47% 11%;
+    --foreground: 210 40% 98%;
+    --border: 217 33% 20%;
+    --primary: 210 40% 98%;
+    --primary-foreground: 222 47% 11%;
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  /*
+   * Shiki en doble tema (CodeBlock con `themes:{light,dark}` + `defaultColor:false`):
+   * cada token trae `--shiki-light`/`--shiki-dark`. El fondo lo pone el contenedor
+   * del bloque (token `muted`, que ya se adapta a crema/oscuro), no Shiki.
+   */
+  .shiki {
+    background-color: transparent !important;
+  }
+  .shiki,
+  .shiki span {
+    color: var(--shiki-light);
+  }
+  .dark .shiki,
+  .dark .shiki span {
+    color: var(--shiki-dark);
+  }
+}
