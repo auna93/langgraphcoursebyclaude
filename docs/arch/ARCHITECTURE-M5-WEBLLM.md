@@ -12,6 +12,11 @@
 > contratos cerrados); en la próxima revisión mayor de ARCHITECTURE.md puede plegarse
 > como §9 literal. Para todos los agentes: **este archivo tiene el mismo rango que
 > ARCHITECTURE.md §4 (contratos cerrados, Gate 2)**.
+>
+> **Adenda 2026-07-09 (post-revisión SF1/SF2):** se cierran dos puntos que quedaron
+> sin normativizar — §9.3.1 (clasificación gpu/red e invariante de config) y §9.4.3
+> (cableado del singleton de producción). Son aclaraciones normativas hacia adelante:
+> SF1 y SF2 siguen en PASS; el cableado y el test pendiente se asignan a SF3.
 
 ---
 
@@ -52,7 +57,8 @@ src/assistant/
   types.ts              +C-WEBLLM +C-ENGINE +delta C-ASSIST (ADITIVO; C-OLLAMA intacto)
   webllmClient.ts       NUEVO (SF1): implementación de C-WEBLLM
   webllm.worker.ts      NUEVO (SF1): worker oficial (new WebWorkerMLCEngineHandler())
-  engineStore.ts        NUEVO (SF2): máquina de estados C-ENGINE (zustand, SIN persist)
+  engineStore.ts        NUEVO (SF2): máquina de estados C-ENGINE (zustand, SIN persist);
+                        SF3 cablea el singleton useEngineStore con el cliente real (§9.4.3)
   useAssistantEngine.ts NUEVO (SF2): hook fino; ÚNICA instancia, en Layout
   ollamaClient.ts       SIN CAMBIOS
   useOllamaStatus.ts    SIN CAMBIOS (única fuente del estado Ollama, ADR-10)
@@ -180,6 +186,37 @@ self.onmessage = (msg: MessageEvent) => handler.onmessage(msg);
 Toda la computación (fetch de artefactos, compilación wasm/GPU, inferencia) ocurre en el
 worker ⇒ la app del curso sigue interactiva durante la descarga (CA-42).
 
+### 9.3.1 Resoluciones NORMATIVAS post-revisión de SF1 (cerradas 2026-07-09)
+
+Dos puntos que §9.3 dejaba abiertos y que el implementer de SF1 resolvió con criterio
+correcto. Se RATIFICAN aquí tal como están implementados en
+`src/assistant/webllmClient.ts` (SF1 sigue en PASS sin cambios): a partir de ahora son
+CONTRATO, no decisión de implementación, y cualquier desviación futura requiere volver
+al architect.
+
+1. **Clasificación `"gpu"` vs `"red"` del rechazo de `load()`.** `kind: "cancelado"` se
+   reserva EXCLUSIVAMENTE a la consecuencia de `cancelLoad()`. Cualquier OTRO rechazo
+   (de `CreateWebWorkerMLCEngine`, del arranque del worker o de la carga) se clasifica
+   por el MENSAJE del error: si matchea `/webgpu|gpu|adapter|device/i` ⇒ `kind: "gpu"`;
+   en cualquier otro caso — incluidos fallos de red/fetch y errores no identificados —
+   ⇒ `kind: "red"` (default). El default `"red"` es DELIBERADO y es la propiedad que
+   importa preservar: `"red"` desemboca en fase `error` (reintentable, E6 de §9.4.1)
+   mientras que `"gpu"` desemboca en `unsupported` (terminal de sesión, SU-11); ante
+   ambigüedad se preserva el reintento. Racional del mecanismo: web-llm no expone
+   errores tipados ni códigos en su API pública, así que la heurística por substring
+   del mensaje es el mecanismo normativo disponible. Si una versión futura de web-llm
+   introdujera errores tipados, migrar la clasificación requiere volver al architect.
+
+2. **Enforcement del invariante `modelUrl`/`modelLibUrl` (ambos o ninguno).** Si SOLO
+   uno de los dos está definido, la configuración es INVÁLIDA y el cliente: ignora el
+   override COMPLETO, usa los defaults de `prebuiltAppConfig` (ADR-18) y emite UN
+   `console.warn` diagnóstico que nombra ambas claves env. NUNCA lanza ni construye una
+   entrada custom parcial: un typo de despliegue degrada a los defaults públicos en vez
+   de tumbar el fallback entero. **Follow-up explícito**: este invariante NO tiene test
+   hoy (el test-author de SF1 lo excluyó, correctamente, por no estar normativizado);
+   lo añade el **test-author de SF3** como test NUEVO sobre `webllmClient` — SOLO test,
+   la implementación de SF1 no se toca (ver SLICES.md, SF3 §Tests).
+
 ## 9.4 C-ENGINE — Selector de motor (`src/assistant/types.ts`, ADITIVO)
 
 ```ts
@@ -239,7 +276,7 @@ export interface EngineState {
   cancelFetch(): void;
 }
 export declare function createEngineStore(client?: WebLlmClient) /* : store zustand */;
-export declare const useEngineStore /* : store zustand por defecto de la app */;
+export declare const useEngineStore /* : store zustand por defecto de la app (cableado NORMATIVO: §9.4.3) */;
 ```
 
 ### 9.4.1 Máquina de estados NORMATIVA (la implementa `engineStore`, SF2)
@@ -277,6 +314,47 @@ vuelve a caer, el fallback es inmediato, coherente con "volver no cuesta nada" �
  *  ChatPanel. */
 export declare function useAssistantEngine(): AssistantEngine;
 ```
+
+### 9.4.3 Cableado del singleton de producción (NORMATIVO — cerrado 2026-07-09, post-revisión de SF2)
+
+§9.4 fija `createEngineStore(client?: WebLlmClient)` con el cliente opcional, pero no
+asignaba quién inyecta el cliente REAL en el singleton `useEngineStore` que consume la
+app vía `useAssistantEngine()` en `Layout`. Resolución:
+
+- **Semántica del parámetro opcional (ratifica el default interino de SF2):**
+  `createEngineStore()` SIN cliente es un modo degradado seguro — el store se comporta
+  exactamente como `detectSupport() === false` (fase `"unsupported"`, 0 llamadas de
+  red/GPU). Existe SOLO para tests y como default interino de SF2; el singleton de
+  producción NO debe quedarse así (con él, el fallback nunca se activaría aunque el
+  navegador soporte WebGPU).
+- **Quién y cómo (lo ejecuta SF3):** SF3 cambia la línea del singleton en
+  `src/assistant/engineStore.ts` a, literalmente:
+
+  ```ts
+  export const useEngineStore = createEngineStore(createWebLlmClient(CONFIG.webllm));
+  ```
+
+  con imports intra-carpeta de `./webllmClient` y de `@/config` (permitidos por las
+  reglas de §9.2; el módulo sigue sin importar React). Es seguro en import-time:
+  `createWebLlmClient` es INERTE hasta `load()` — construirlo no crea worker, ni toca
+  red, ni GPU (verificado en la implementación de SF1); la primera acción real solo
+  ocurre vía la máquina §9.4.1 (E3/E5). Este es el ÚNICO cambio permitido a
+  `engineStore.ts` dentro de SF3; la firma de `createEngineStore` no cambia.
+- **Por qué SF3 y no otro punto:** SF3 ya exige SF1+SF2 en PASS (el cliente real
+  existe) y es el slice que hace fluir el chat real por WebLLM — sin este cableado,
+  CA-40..CA-46 serían inverificables en la app real. Alternativas descartadas: cablear
+  en `Layout`/entry (la capa app no debe conocer clientes concretos de `assistant/`;
+  el punto natural es intra-carpeta, análogo a `getPyRunner()` de C-RUNNER) y un
+  micro-slice dedicado (overhead de DAG para una línea + un test).
+- **Test OBLIGATORIO de cableado (SF3):** los tests de SF2 prueban la FACTORY con un
+  fake inyectado; NO prueban el singleton de producción. SF3 añade un test que, con el
+  módulo `@/assistant/webllmClient` sustituido por un doble (module mock) ANTES de
+  importar `engineStore`, verifica: (a) `createWebLlmClient` fue invocada EXACTAMENTE
+  una vez con `CONFIG.webllm`; y (b) el singleton enruta a ESA instancia — con
+  `CONFIG.webllm.enabled === true`,
+  `useEngineStore.getState().setOllamaStatus("disconnected")` acaba invocando
+  `detectSupport()` del doble (demuestra que el guard "sin cliente ⇒ unsupported
+  permanente" ya no gobierna el store de producción).
 
 ## 9.5 Delta ADITIVO de C-ASSIST (`src/assistant/types.ts`)
 
