@@ -24,6 +24,7 @@ M3:         S12 ──► S14, S15                     ▼
             S13 (solo S1+S6)          integrator M2
                  S13 ∥ S14 ∥ S15 (tras S12)
 M4:         SE0 ──► SE1 (piloto mod01–03) ──(gate humano)──► SE2 ∥ SE3 ∥ SE4
+M5:         SF1 ∥ SF2 ──► SF3   (fallback WebGPU, PRD §13; requiere S8–S11 en PASS)
 ```
 `*` = comparte contrato con otro slice en curso (ya cerrado, ver columna Contratos).
 
@@ -425,6 +426,116 @@ mod01→mod16); e2e: un módulo enriquecido navega pasos → mini-ejercicio (run
 IA" (prompt copiable al chat existente) → "En tu máquina" (bloques copiables). Build y e2e
 en verde. Fin del enriquecimiento según PRD §12.
 
+## Milestone M5 — Fallback in-browser del asistente (WebLLM/WebGPU, PRD §13)
+
+> **Contratos CERRADOS (2026-07-09):** C-WEBLLM (cliente WebLLM en Web Worker) y
+> C-ENGINE (selector de motor) + deltas ADITIVOS de C-ASSIST y CONFIG, definidos en
+> **`docs/arch/ARCHITECTURE-M5-WEBLLM.md`** (extensión normativa §9 de ARCHITECTURE.md;
+> mismo rango que §4). **C-OLLAMA no cambia ni una firma** (ADR-16): el health-check
+> sigue siendo la única fuente del estado de Ollama, también con el fallback activo
+> (así se detecta el retorno, CA-46). Todos los cambios de tipos son aditivos ⇒ S8–S11
+> en PASS siguen compilando y verdes.
+> **Paralelización**: SF1 ∥ SF2 tras el cierre de contratos (archivos disjuntos; SF2
+> usa un `WebLlmClient` fake conforme a C-WEBLLM hasta integrar SF1). **SF3 requiere
+> SF1+SF2 en PASS** (cablea `chatStore` con `engineStore` y el cliente real).
+> **Strings**: TODOS los literales M5 (§9.7, incl. los avisos que consumirá SF3) los
+> añade SF2 a `src/app/strings.ts` — único slice M5 que toca ese archivo.
+
+### SF1 — Cliente WebLLM + worker (C-WEBLLM)
+- **Objetivo**: `src/assistant/webllmClient.ts` + `webllm.worker.ts` según C-WEBLLM
+  (§9.3): `detectSupport` (navigator.gpu + requestAdapter, sin red), `isModelCached`
+  (`hasModelInCache`), `load` vía `CreateWebWorkerMLCEngine` con el model id de
+  `CONFIG.webllm.model` (CA-48) y progreso 0–100 monótono (CA-42), `cancelLoad` por
+  `worker.terminate()` + re-init lazy (CA-43, patrón C-RUNNER/ADR-17), `chatStream`
+  (AsyncGenerator → onToken; abort → `interruptGenerate()` ≤2 s sin onError, parcial
+  intacto; errores mapeados a `EngineStreamError`), `unload`; appConfig custom si
+  `VITE_WEBLLM_MODEL_URL`+`VITE_WEBLLM_MODEL_LIB_URL` están definidos (ADR-18);
+  `CONFIG.webllm` en `src/config.ts` (§9.6); dependencia `@mlc-ai/web-llm` con versión
+  EXACTA pineada (R14).
+- **CA**: CA-42, CA-43, CA-44 (a nivel de cliente, sin UI), CA-47 (GET-only por
+  construcción; verificación e2e de red en el cierre M5), CA-48.
+- **Contratos**: produce la implementación de C-WEBLLM; consume CONFIG (delta cerrado).
+  No toca C-OLLAMA ni chatStore.
+- **Toca**: `src/assistant/webllmClient.ts` (nuevo), `src/assistant/webllm.worker.ts`
+  (nuevo), `src/config.ts` (claves `webllm`), `package.json` (dep pineada).
+- **Depende de**: S0 (y S8 solo por convivir en `src/assistant/`, sin archivos
+  compartidos). **Paralelo con SF2.**
+- **Tests**: unitarios con engine/worker fakes inyectables: progreso monótono no
+  decreciente 0→100 (CA-42); `cancelLoad` ⇒ terminate y el `load` pendiente rechaza
+  `"cancelado"` (CA-43); abort de `chatStream` ⇒ sin onError y parcial intacto (CA-22
+  para CA-44); error del engine ⇒ `onError(kind:"engine")`; init GPU fallida ⇒ rechaza
+  `"gpu"` (SU-11); override construye appConfig con el id exacto y las URLs custom
+  (CA-48/ADR-18); test de contrato: `CONFIG.webllm.model` existe en
+  `prebuiltAppConfig.model_list` (R14). Smoke manual documentado con GPU real.
+
+### SF2 — Selector de motor + oferta/descarga + badge (C-ENGINE)
+- **Objetivo**: `engineStore` con la máquina de estados NORMATIVA (§9.4.1: E1–E8, con
+  `WebLlmClient` inyectable), `selectActiveEngine` e `isChatEnabled` puros,
+  `useAssistantEngine` (hook fino, ÚNICA instancia en `Layout`), `StatusBadge` extendido
+  (props `AssistantEngine`; label `"Respaldo WebGPU activo"` cuando `active==="webllm"`;
+  literales y comandos CA-19/20 EXACTOS en estados terminales), `WebGpuFallbackCard`
+  (oferta con tamaño estimado MB/GB, progreso con cancelar, reintento; §9.8), TODOS los
+  strings M5 (§9.7) y cableado de `Layout` (pasa el snapshot por props; `ChatPanel`
+  sigue recibiendo `engine.ollama` como interino hasta SF3).
+- **CA**: CA-40, CA-41, CA-42 (UI), CA-43 (UI), CA-45 (parte badge).
+- **Contratos**: produce la implementación de C-ENGINE; consume C-WEBLLM (cerrado;
+  client fake hasta integrar SF1) y C-OLLAMA (solo lectura de `OllamaStatus`, sin
+  cambios).
+- **Toca**: `src/assistant/engineStore.ts` (nuevo), `useAssistantEngine.ts` (nuevo),
+  `src/components/StatusBadge.tsx`, `src/components/WebGpuFallbackCard.tsx` (nuevo),
+  `src/app/strings.ts`, `src/app/Layout.tsx`.
+- **Depende de**: S8 (en PASS). **Paralelo con SF1.**
+- **Tests**: unitarios de la máquina de estados (tabla E1–E8: `checking` no dispara
+  nada; `connected` retira la oferta pero NO aborta un `fetching` (CA-46); degradado +
+  `inactive` ⇒ detect/cache ⇒ `offer`|`fetching` en ≤3 s (CA-40a/b); sin WebGPU o
+  `enabled=false` ⇒ `unsupported`/`inactive` con 0 llamadas a `load` (CA-41);
+  `cancelled` estable sin auto-reintento; init GPU fallida ⇒ `unsupported` (SU-11));
+  `selectActiveEngine` tabla de verdad (incl. `checking` mantiene `prev`); componente:
+  oferta muestra tamaño en MB/GB y botón (CA-40b); progreso con ≥1 actualización por
+  cada 10% (CA-42); cancelar ⇒ vuelve a literales CA-19/20 con oferta accesible
+  (CA-43/CA-41); badge muestra literal que contiene `WebGPU`, distinto de los 3
+  existentes (CA-45); e2e con client fake: durante una "descarga" se navega a otro
+  módulo y se responde un quiz (CA-42 no bloquea).
+
+### SF3 — Chat vía WebGPU + conmutación con avisos (delta C-ASSIST)
+- **Objetivo**: `chatStore` según §9.5: selección de motor POR MENSAJE en `send()`
+  (ADR-19; `active===null` ⇒ no-op), mensaje assistant etiquetado con `engine`,
+  historial excluye avisos, error string por motor (`errorStream` /
+  `errorStreamWebGpu`), `appendEngineNotice` + suscripción a cambios de `active` con la
+  regla normativa de anuncio (todo cambio a motor no-null distinto del último anunciado,
+  salvo el primer `"ollama"` de la sesión); `ChatPanel` habilitado vía
+  `isChatEnabled(engine)` (sustituye y elimina `isChatInputDisabled`); paridad completa
+  con WebLLM: `buildPrompt` y `sendFeynmanFeedback` SIN cambios (CA-23/24/27 heredados).
+- **CA**: CA-44 (paridad completa CA-21/22/23/24/27 vía WebGPU), CA-45 (avisos en el
+  hilo), CA-46; regresión CA-19/20/25/26 (CA-25 con la excepción acotada de CA-47).
+- **Contratos**: consume C-ENGINE, C-WEBLLM y el delta C-ASSIST (todos cerrados).
+  Comparte `chatStore` con S9/S10/S11 (cerrados, en PASS) — solo se permite porque los
+  contratos están fijos.
+- **Toca**: `src/assistant/chatStore.ts`, `src/components/ChatPanel.tsx`,
+  `src/components/StatusBadge.tsx` (retirada de `isChatInputDisabled`),
+  `src/app/Layout.tsx` (prop de ChatPanel), tests afectados de S9.
+- **Depende de**: SF1, SF2 (ambos en PASS) + S9/S10/S11 (en PASS).
+- **Tests**: store con AMBOS clientes fake: con `connected` ⇒ el send va al cliente
+  Ollama (request a `/ollama`, CA-46 verificable); degradado + `ready` ⇒ va al cliente
+  WebLLM; una generación en curso NO se corta al conmutar en ningún sentido (CA-46);
+  avisos: degradado→`ready` ⇒ aviso que nombra WebGPU en ≤10 s; `ready`→`connected` ⇒
+  siguiente send por Ollama + aviso que nombra Ollama; primer `connected` de sesión ⇒
+  SIN aviso (CA-45); el historial enviado al motor excluye mensajes con `aviso`;
+  paridad: prompt vía WebLLM incluye módulo actual y ragHits no vacíos (CA-23/24 ⇒
+  CA-44); stop ≤2 s con parcial visible (CA-22); feedback Feynman vía WebLLM (CA-27);
+  ≥2 actualizaciones incrementales (CA-21); e2e con mocks de ambos motores (caída de
+  Ollama simulada ⇒ oferta ⇒ activación fake ⇒ chat ⇒ recuperación ⇒ retorno).
+
+**Cierre M5 (integrator)**: SF1–SF3 en PASS ⇒ e2e completo con mocks: degradación →
+oferta (0 requests al host de artefactos antes de aceptar, CA-40/41) → descarga fake con
+progreso y cancelación (CA-42/43) → chat vía WebGPU con RAG/módulo/feedback (CA-44) →
+recuperación de Ollama → retorno automático con aviso (CA-45/46); regresión completa
+CA-18..CA-27 (CA-19/20 con fallback deshabilitado y con WebGPU no soportado, CA-41);
+verificación de red (Playwright): 0 requests externas salvo GET de artefactos tras
+aceptar la oferta y 0 con modelo cacheado (CA-47/CA-25); test de contrato del model id
+(CA-48/R14); smoke manual documentado con GPU real + Ollama real (apagar/encender
+`ollama serve` durante una sesión). Build y e2e en verde. Fin del fallback según PRD §13.
+
 ## Resumen de paralelización (Gate 2 ya superado para todos)
 
 | Tras PASS de… | Pueden ir EN PARALELO |
@@ -437,8 +548,12 @@ en verde. Fin del enriquecimiento según PRD §12.
 | S12 (en PASS) | S13 ∥ S14 ∥ S15 |
 | S2+S3+S6 (M4) | SE0 (infra; coordinar `types.ts` con S13–S15 en vuelo) |
 | SE0 + gate humano del piloto | SE2 ∥ SE3 ∥ SE4 (SE1 va primero: piloto mod01–03) |
+| S8–S11 en PASS + contratos M5 cerrados (2026-07-09) | SF1 ∥ SF2 |
+| SF1 + SF2 | SF3 (único consumidor del delta C-ASSIST M5) |
 
 **Contratos compartidos ya cerrados** (ninguno bloquea, pero cambiarlos re-bloquea a
 todos sus consumidores): C-CONTENT (+ delta §8, cerrado M4) → S1,S2,S4,S5,S7,S10,S13–S15,
 SE0–SE4 · C-PROGRESS → S3,S4,S5,S7,S11,SE0 · C-RUNNER (+tablas shim, cerradas en M3) →
-S6,S7,S12–S15,SE0–SE4 · C-OLLAMA → S8,S9 · C-ASSIST → S9,S10,S11 · C-RAG → S10.
+S6,S7,S12–S15,SE0–SE4 · C-OLLAMA → S8,S9 (M5: SF2/SF3 lo consumen en SOLO lectura, sin
+cambios) · C-ASSIST (+ delta M5, cerrado 2026-07-09) → S9,S10,S11,SF3 · C-RAG → S10 ·
+C-WEBLLM (M5) → SF1,SF2,SF3 · C-ENGINE (M5) → SF2,SF3.

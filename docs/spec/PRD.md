@@ -27,7 +27,9 @@ barra lateral que responde dudas con RAG sobre el contenido del curso.
 - **O2**: Cada módulo verifica comprensión de forma automática y objetiva: ningún
   ejercicio requiere juicio humano para marcar "hecho".
 - **O3**: Toda la experiencia funciona offline/local: sin cuentas, sin cloud, sin envío
-  de datos fuera de la máquina del alumno.
+  de datos fuera de la máquina del alumno. *(Única excepción de red admitida: la
+  descarga puntual de los artefactos del modelo del fallback WebGPU, §13/CA-47; la
+  inferencia es siempre local.)*
 - **O4**: El asistente reduce la fricción de dudas: respuestas contextualizadas al
   módulo actual, en streaming, con instrucciones claras de recuperación si Ollama no
   está disponible.
@@ -87,6 +89,10 @@ Prioridad: **M** = must, **S** = should, **C** = could.
   Feynman para detectar gaps que no veo solo.
 - **US-16 (C)** — Como alumno quiero que la conversación del chat persista durante la
   sesión (y se pueda limpiar) para retomar el hilo entre módulos.
+- **US-17 (M)** — Como alumno sin qwen disponible (Ollama caído o modelo no instalado)
+  quiero que el asistente funcione con un modelo local en mi navegador (WebGPU) para no
+  quedarme sin ayuda mientras arreglo Ollama. *(Añadida 2026-07-09 por decisión
+  explícita del humano; ver §13.)*
 
 ## 5. Estructura pedagógica
 
@@ -170,15 +176,15 @@ Reglas de contenido:
 
 | ID | Requisito |
 |---|---|
-| A-01 | Motor: Ollama local en `http://localhost:11434`. Modelo por defecto `qwen2.5-coder:14b`, con override por configuración/env. Sin ningún proveedor cloud. |
+| A-01 | Motor **primario**: Ollama local en `http://localhost:11434`. Modelo por defecto `qwen2.5-coder:14b`, con override por configuración/env. Sin ningún proveedor cloud. *(Motor de respaldo in-browser: §13, A-11–A-16.)* |
 | A-02 | Health-check vía `GET /api/tags` al cargar la app y de forma periódica/reintento; chat vía `POST /api/chat` con streaming NDJSON. |
-| A-03 | Indicador de estado siempre visible en el sidebar con 3 estados: **Conectado** (Ollama responde y el modelo está en `/api/tags`), **Modelo no instalado** (Ollama responde pero falta el modelo), **Sin conexión** (Ollama no responde). |
-| A-04 | Degradación con gracia: en "Sin conexión" el chat se deshabilita y muestra el comando `ollama serve`; en "Modelo no instalado" muestra `ollama pull qwen2.5-coder:14b`. La app del curso sigue 100% funcional sin asistente. |
+| A-03 | Indicador de estado siempre visible en el sidebar con 3 estados: **Conectado** (Ollama responde y el modelo está en `/api/tags`), **Modelo no instalado** (Ollama responde pero falta el modelo), **Sin conexión** (Ollama no responde). *(El fallback WebGPU añade un estado propio: §13, CA-45.)* |
+| A-04 | Degradación con gracia: si el fallback WebGPU está disponible, aplica primero §13; como **estado terminal** (sin WebGPU disponible, fallback deshabilitado o descarga cancelada/no aceptada), en "Sin conexión" el chat se deshabilita y muestra el comando `ollama serve`; en "Modelo no instalado" muestra `ollama pull qwen2.5-coder:14b`. La app del curso sigue 100% funcional sin asistente. |
 | A-05 | RAG sobre el contenido del curso: cada respuesta se construye con fragmentos relevantes de los módulos como contexto. El asistente responde en español y prioriza el contenido del curso sobre conocimiento general. |
 | A-06 | Contexto de ubicación: el módulo actualmente abierto se incluye como contexto prioritario de la conversación (US-14). |
 | A-07 | Streaming de tokens: la respuesta se pinta incrementalmente; existe control para detener la generación en curso. |
 | A-08 | Si la pregunta está fuera del alcance del curso/LangGraph, el asistente lo dice y redirige al temario (comportamiento definido por system prompt). |
-| A-09 | Privacidad: cero peticiones de red a dominios externos originadas por el asistente; todo ocurre entre el navegador y `localhost`. |
+| A-09 | Privacidad: cero peticiones de red a dominios externos originadas por el asistente; todo ocurre entre el navegador y `localhost`. *(Única excepción acotada: descarga de artefactos del modelo del fallback WebGPU, §13/CA-47 — nunca contiene datos del alumno.)* |
 | A-10 | Feedback Feynman (US-15): desde el paso 1 de un módulo, el alumno puede enviar su explicación al asistente con un solo clic para recibir crítica de gaps. |
 
 ## 8. Criterios de aceptación (medibles, numerados)
@@ -246,10 +252,16 @@ sin reinterpretación.
 
 - **CA-18**: Given Ollama corriendo con `qwen2.5-coder:14b` instalado, Then el
   indicador muestra "Conectado" en ≤5 s tras cargar la app.
-- **CA-19**: Given Ollama apagado, Then el indicador muestra "Sin conexión", el input
-  del chat queda deshabilitado y se muestra literalmente el comando `ollama serve`.
-- **CA-20**: Given Ollama corriendo sin el modelo, Then el indicador muestra "Modelo no
-  instalado" y se muestra literalmente `ollama pull qwen2.5-coder:14b`.
+- **CA-19**: Given Ollama apagado **y el fallback WebGPU no disponible ni activo**
+  (navegador sin WebGPU, fallback deshabilitado por configuración, o descarga no
+  aceptada/cancelada — ver §13/CA-41), Then el indicador muestra "Sin conexión", el
+  input del chat queda deshabilitado y se muestra literalmente el comando
+  `ollama serve`. *(Condición añadida 2026-07-09; comportamiento original intacto como
+  estado terminal de degradación.)*
+- **CA-20**: Given Ollama corriendo sin el modelo **y el fallback WebGPU no disponible
+  ni activo** (mismas condiciones que CA-19), Then el indicador muestra "Modelo no
+  instalado" y se muestra literalmente `ollama pull qwen2.5-coder:14b`. *(Condición
+  añadida 2026-07-09; comportamiento original intacto como estado terminal.)*
 - **CA-21**: Given estado "Conectado", When el alumno envía una pregunta, Then el primer
   token visible aparece en ≤10 s y la respuesta se renderiza incrementalmente (≥2
   actualizaciones visibles antes de completarse en respuestas de >50 tokens).
@@ -262,7 +274,9 @@ sin reinterpretación.
   prompt enviado a Ollama contiene fragmentos recuperados del contenido del curso
   (verificable inspeccionando la request: el contexto RAG no está vacío).
 - **CA-25**: Given cualquier uso del asistente, Then las únicas peticiones de red
-  salen hacia `localhost:11434` (0 requests a dominios externos).
+  salen hacia `localhost:11434` (0 requests a dominios externos), **con la única
+  excepción acotada de la descarga de artefactos del modelo del fallback WebGPU
+  definida en CA-47** *(excepción añadida 2026-07-09)*.
 - **CA-26**: Given una caída de Ollama a mitad de respuesta, Then la UI muestra un
   error legible en español con la instrucción de recuperación, sin romper la app.
 - **CA-27**: Given el paso 1 de un módulo con explicación escrita, When el alumno pulsa
@@ -283,8 +297,14 @@ sin reinterpretación.
 ## 9. No-goals (explícitos)
 
 - **NG-01**: Sin autenticación, cuentas de usuario ni backend de identidad.
-- **NG-02**: Sin backend propio de LLM ni proveedores cloud (OpenAI, Anthropic, etc.);
-  el único motor de IA es Ollama local. No WebLLM/WebGPU in-browser.
+- **NG-02**: Sin backend propio de LLM ni proveedores cloud (OpenAI, Anthropic, etc.).
+  El motor primario del asistente es **Ollama local**. WebLLM/WebGPU in-browser está
+  permitido **únicamente** como fallback automático cuando qwen vía Ollama no está
+  disponible (estados `disconnected` / `model_missing`; especificación completa en
+  §13) — **nunca** como motor primario, ni como reemplazo de Ollama, ni como opción
+  seleccionable en igualdad de condiciones. *(Modificado 2026-07-09 por decisión
+  explícita del humano; la versión original prohibía WebLLM/WebGPU sin excepción.
+  Trazabilidad del cambio en `docs/reference/DECISIONS.md`.)*
 - **NG-03**: Sin sincronización de progreso entre dispositivos ni almacenamiento en la
   nube.
 - **NG-04**: Sin certificados, gamificación avanzada (rankings, badges sociales) ni
@@ -314,6 +334,7 @@ sin reinterpretación.
   de producto razonables; ajustables por el humano sin impacto de diseño.
 - **SU-06**: El alumno dispone de una máquina capaz de correr `qwen2.5-coder:14b`; si
   no, el override de modelo (A-01) permite usar uno menor sin cambios de producto.
+  *(Complementado por §13: si ni siquiera hay Ollama, el fallback WebGPU cubre el hueco.)*
 - **SU-07**: El contenido del curso es estático y se versiona con la app (el índice RAG
   se construye a partir de él; cómo, lo decide el architect).
 
@@ -321,6 +342,7 @@ sin reinterpretación.
 
 **Bloqueantes: ninguna.** Todas las ambigüedades detectadas quedaron resueltas con
 defaults explícitos en §10, revisables por el humano sin re-trabajo de diseño.
+*(Las del fallback WebGPU, también no bloqueantes, están en §13.5.)*
 
 ---
 
@@ -499,3 +521,133 @@ Verificables por test o inspección de contenido. Aplican a **cada módulo enriq
 están fijados en `docs/reference/enriquecimiento-decisiones.md`. Los umbrales de
 CA-30/31/33 (≥5 pasos, ≥3 mini-ejercicios, orden por nº de `# TODO`) son defaults de
 producto ajustables por el humano sin re-trabajo de diseño.
+
+---
+
+## 13. Fallback in-browser del asistente (WebLLM/WebGPU)
+
+> Sección **aditiva** (mismo patrón que §12), añadida el **2026-07-09** por decisión
+> explícita del humano: *"permite la utilización de un modelo WebGPU si no se dispone
+> de qwen"*. Esta decisión **reabre** NG-02 y la decisión "Motor" de
+> `docs/reference/DECISIONS.md` (ambos actualizados con trazabilidad). Cubre US-17.
+> Terminología de estados tomada del contrato C-OLLAMA vigente
+> (`connected` / `model_missing` / `disconnected` / `checking`).
+
+### 13.1 Decisión y racional de producto
+
+- **Qué**: cuando qwen vía Ollama **no está disponible**, el asistente conmuta
+  automáticamente a un modelo pequeño ejecutado **dentro del navegador** vía WebGPU
+  (familia WebLLM). El curso deja de perder su asistente cada vez que Ollama falla.
+- **Disparadores — ambos estados degradados de C-OLLAMA**: `disconnected` (Ollama no
+  responde) **y** `model_missing` (Ollama responde pero falta el modelo). Racional:
+  ambos significan literalmente "no se dispone de qwen" (la condición pedida por el
+  humano) y para el alumno el efecto es idéntico (chat inutilizable). `checking` NO
+  dispara el fallback (es transitorio).
+- **Jerarquía inmutable**: Ollama es siempre el motor **primario**; WebGPU es un modo
+  degradado de respaldo. El retorno a Ollama es **automático** (no "pegajoso").
+  Racional: qwen2.5-coder:14b es estrictamente superior en calidad al modelo in-browser,
+  y volver a Ollama no cuesta nada (no hay descarga); un fallback pegajoso dejaría al
+  alumno en el motor débil sin motivo.
+- **Transparencia obligatoria**: el alumno sabe en todo momento qué motor responde;
+  el fallback nunca es invisible ni se hace pasar por qwen.
+
+### 13.2 Requisitos del fallback
+
+| ID | Requisito |
+|---|---|
+| A-11 | **Motor de respaldo in-browser** vía WebGPU (familia WebLLM). Se activa automáticamente solo cuando el health-check (A-02) resuelve `disconnected` o `model_missing`; nunca cuando resuelve `connected` ni durante `checking`. Habilitado por defecto; desactivable por configuración (con fallback desactivado, aplica la degradación terminal de A-04). |
+| A-12 | **Feature-detection de WebGPU** antes de cualquier intento de carga: si el navegador no expone WebGPU o no hay adaptador de GPU utilizable (incl. fallo de inicialización por VRAM insuficiente), la app degrada exactamente a los mensajes actuales de A-04/CA-19/CA-20 y no descarga nada. |
+| A-13 | **Descarga y carga del modelo sin fricción hostil**: la primera descarga de pesos (orden de GB) requiere una confirmación explícita del alumno mostrando el tamaño estimado; muestra progreso, es cancelable y no bloquea el resto de la app. Los artefactos quedan cacheados por el navegador: en sesiones futuras la activación es totalmente automática, sin nueva confirmación ni re-descarga. |
+| A-14 | **Retorno automático a Ollama**: el health-check periódico (A-02) sigue corriendo mientras el fallback está activo; al detectar `connected`, el siguiente mensaje se envía vía Ollama. Nunca se interrumpe una generación en curso por la conmutación (en ningún sentido). |
+| A-15 | **Modelo por defecto**: `Qwen2.5-Coder-1.5B-Instruct-q4f16_1-MLC` (misma familia que el primario, apto para navegador: ~1.6 GB de VRAM). Sobreescribible por configuración/env con el mismo mecanismo de override que A-01 (CONFIG). |
+| A-16 | **Paridad de contrato UX y transparencia de motor**: con el fallback activo aplican igual A-05 (RAG), A-06 (contexto de módulo), A-07 (streaming + detener), A-08 (system prompt de alcance) y A-10 (feedback Feynman). El indicador de estado distingue el motor activo en todo momento y toda conmutación se anuncia en el chat. No se exige paridad de *calidad* de respuesta (SU-09). |
+
+### 13.3 Criterios de aceptación del fallback (medibles, numerados)
+
+- **CA-40 (activación automática)**: Given navegador con WebGPU soportado y fallback
+  habilitado, When el health-check resuelve `disconnected` o `model_missing`, Then en
+  ≤3 s se inicia automáticamente la activación del fallback: (a) si el modelo ya está
+  cacheado, comienza la carga sin ninguna acción del alumno y el chat queda habilitado
+  al completarse; (b) si no está cacheado, se muestra la oferta de descarga con el
+  tamaño estimado en MB/GB y un control para iniciarla. And Given estado `checking` o
+  `connected`, Then el fallback no se activa ni se ofrece (0 peticiones al host de
+  artefactos).
+- **CA-41 (sin WebGPU o fallback deshabilitado)**: Given navegador sin WebGPU
+  (feature-detection negativa: API ausente o sin adaptador utilizable) **o** fallback
+  deshabilitado por configuración, When el health-check resuelve `disconnected` o
+  `model_missing`, Then el comportamiento es exactamente el de CA-19/CA-20 (mensajes
+  literales `ollama serve` / `ollama pull qwen2.5-coder:14b`, input deshabilitado) y
+  no se realiza ninguna petición al host de artefactos del modelo (verificable por
+  panel de red: 0 requests).
+- **CA-42 (descarga con progreso y sin bloquear)**: Given la oferta de descarga
+  aceptada, Then se muestra un indicador de progreso con porcentaje monótonamente no
+  decreciente de 0 a 100 (≥1 actualización visible por cada 10% descargado), And
+  durante toda la descarga la app del curso sigue interactiva (es posible navegar a
+  otro módulo y responder un quiz mientras descarga, verificable por e2e).
+- **CA-43 (cancelar)**: Given una descarga/carga del modelo WebGPU en curso, When el
+  alumno pulsa "cancelar", Then la descarga cesa en ≤2 s, el estado vuelve a la
+  degradación terminal de CA-19/CA-20, And no se reintenta automáticamente en esa
+  sesión (solo si el alumno vuelve a aceptar la oferta, que permanece accesible).
+- **CA-44 (paridad de chat con WebGPU)**: Given el modelo WebGPU cargado y activo,
+  When el alumno envía una pregunta, Then se cumplen las mismas garantías observables
+  que CA-21 (primer token ≤10 s, render incremental con ≥2 actualizaciones en
+  respuestas de >50 tokens), CA-22 (detener ≤2 s con texto parcial visible), CA-23
+  (contexto del módulo actual) y CA-24 (contexto RAG no vacío en el prompt enviado al
+  motor), And CA-27 (feedback Feynman) funciona igual con este motor.
+- **CA-45 (transparencia de motor)**: Given el fallback activo, Then el indicador de
+  estado del sidebar (A-03) muestra un estado propio cuyo label contiene literalmente
+  `WebGPU` y es distinto de los tres literales existentes ("Conectado", "Modelo no
+  instalado", "Sin conexión"), visible en todo momento; And When el motor conmuta en
+  cualquier dirección (Ollama→WebGPU o WebGPU→Ollama), Then aparece en el hilo del
+  chat un aviso en español que nombra el motor entrante, en ≤10 s desde la detección
+  del cambio de estado.
+- **CA-46 (retorno automático a Ollama, no pegajoso)**: Given el asistente respondiendo
+  vía WebGPU, When el health-check periódico detecta `connected`, Then el siguiente
+  mensaje enviado por el alumno se procesa vía Ollama (verificable: la request va a
+  `localhost:11434`), And ninguna generación en curso se interrumpe por la conmutación,
+  And una descarga de pesos en curso no se aborta automáticamente (el alumno puede
+  cancelarla con CA-43).
+- **CA-47 (privacidad acotada)**: Given cualquier uso del asistente con el fallback,
+  Then las únicas peticiones de red a dominios externos son **GET de artefactos del
+  modelo** (pesos, wasm, configuración) hacia el host de artefactos configurado,
+  ocurren únicamente durante la descarga/carga del modelo, y **ninguna** contiene
+  contenido de conversación, progreso del alumno ni texto del curso (verificable por
+  panel de red: solo método GET sin body, solo URLs del host configurado). And Given
+  el modelo ya cacheado, Then una sesión completa de chat vía WebGPU produce 0
+  peticiones de red a dominios externos (la inferencia es 100% local).
+- **CA-48 (modelo por defecto y override)**: El modelo WebGPU por defecto es
+  literalmente `Qwen2.5-Coder-1.5B-Instruct-q4f16_1-MLC`; Given un override por
+  configuración/env (mismo mecanismo que A-01/CONFIG) con otro id de modelo soportado,
+  Then el motor in-browser solicita y carga exactamente ese id (verificable por
+  inspección de la petición de artefactos o del registro del engine).
+
+### 13.4 Supuestos del fallback (con default decidido — no bloquean)
+
+- **SU-08 (consentimiento de descarga)**: la *conmutación de motor* es automática
+  (petición literal del humano), pero la **primera descarga** de pesos exige un clic de
+  confirmación con tamaño visible: default de producto para proteger conexiones medidas
+  y no descargar GBs sin aviso. Tras el primer cacheo, todo es automático. Revisable
+  por el humano sin re-diseño (pasar a descarga 100% automática solo cambia CA-40b/CA-42).
+- **SU-09 (calidad no paritaria)**: se acepta que el modelo 1.5B in-browser responde
+  con menor calidad que qwen 14B; el contrato exigible es de UX (CA-44), no de calidad
+  de contenido. Por eso el retorno a Ollama es automático (A-14).
+- **SU-10 (origen de artefactos)**: de dónde se sirven los pesos (CDN pública de
+  MLC/HuggingFace vs. auto-hospedados junto a la app) lo decide el architect; el
+  contrato de producto es CA-47 (solo GET de artefactos, cero datos del alumno) sea
+  cual sea el host.
+- **SU-11 (hardware del alumno)**: el default de A-15 requiere ~1.6 GB de VRAM; si la
+  GPU no puede inicializar el modelo, ese fallo cuenta como feature-detection negativa
+  (A-12/CA-41) y degrada a los mensajes actuales. No se exige soporte universal.
+
+### 13.5 Preguntas abiertas del fallback
+
+**Bloqueantes: ninguna** (defaults en §13.4). No bloqueantes, para el architect:
+
+- Definir el **contrato nuevo** (p. ej. `C-WEBLLM`) en `docs/arch/` y cómo convive con
+  C-OLLAMA: extensión del enum de estados vs. capa selectora de motor por encima de
+  ambos clientes; y dónde vive la abstracción común de chat en streaming.
+- Nombres exactos de las claves de CONFIG/env del fallback (modelo, habilitado on/off,
+  host de artefactos), siguiendo el patrón `VITE_*` existente.
+- Estrategia de empaquetado/hosting de artefactos (SU-10) y su impacto en el proxy/CSP.
+- Label e strings exactos del nuevo estado y de los avisos de conmutación (patrón
+  ADR-07: constantes exportadas; el PRD solo fija que el label contiene `WebGPU`).
