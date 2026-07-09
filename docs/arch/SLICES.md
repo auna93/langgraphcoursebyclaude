@@ -446,6 +446,11 @@ en verde. Fin del enriquecimiento según PRD §12.
 > architect — §9.3.1 (clasificación gpu/red + invariante de config, ratifica lo
 > implementado en SF1) y §9.4.3 (cableado del singleton, asignado a SF3). SF1 y SF2
 > siguen en PASS sin cambios; SF3 absorbe el cableado y el test pendiente (ver abajo).
+> **Adenda 2026-07-09 (pre-implementación SF3):** tercer hueco cerrado — **§9.5.1**:
+> cómo `chatStore.send()` obtiene la instancia "warm" del `WebLlmClient` (la MISMA del
+> singleton, vía el export `getWebLlmClient()` de `engineStore.ts`; el bloque literal
+> de §9.4.3 queda revisado a tres líneas, misma semántica). Detectado por el
+> test-author de SF3; **ni SF1 ni SF2 requieren cambio alguno** (siguen en PASS).
 
 ### SF1 — Cliente WebLLM + worker (C-WEBLLM) — **EN PASS**
 - **Objetivo**: `src/assistant/webllmClient.ts` + `webllm.worker.ts` según C-WEBLLM
@@ -518,27 +523,44 @@ en verde. Fin del enriquecimiento según PRD §12.
   salvo el primer `"ollama"` de la sesión); `ChatPanel` habilitado vía
   `isChatEnabled(engine)` (sustituye y elimina `isChatInputDisabled`); paridad completa
   con WebLLM: `buildPrompt` y `sendFeynmanFeedback` SIN cambios (CA-23/24/27 heredados).
-  **Cableado del singleton de producción (§9.4.3, NORMATIVO)**: la línea de
-  `useEngineStore` en `src/assistant/engineStore.ts` pasa a, literalmente,
-  `export const useEngineStore = createEngineStore(createWebLlmClient(CONFIG.webllm));`
+  **Cableado del singleton de producción (§9.4.3 revisado por §9.5.1, NORMATIVO)**: el
+  bloque del singleton en `src/assistant/engineStore.ts` pasa a, literalmente,
+  `const webLlmClient = createWebLlmClient(CONFIG.webllm);` +
+  `export const useEngineStore = createEngineStore(webLlmClient);` +
+  `export function getWebLlmClient(): WebLlmClient { return webLlmClient; }`
   — `createWebLlmClient` es inerte hasta `load()` (0 worker/red/GPU al instanciarse),
-  y es el ÚNICO cambio permitido en ese archivo; sin él, el store de producción se
-  queda en el default interino de SF2 (fase `"unsupported"` permanente) y el fallback
-  nunca se activa en la app real.
+  y esas TRES líneas son el ÚNICO cambio permitido en ese archivo; sin ellas, el store
+  de producción se queda en el default interino de SF2 (fase `"unsupported"`
+  permanente) y el fallback nunca se activa en la app real.
+  **Obtención del cliente "warm" en `chatStore` (§9.5.1, NORMATIVO)**: `chatStore` NO
+  construye su propio `WebLlmClient` (el patrón "instancia propia" de Ollama NO se
+  traslada: una instancia nueva estaría "cold" y rompería CA-44); la factory gana un
+  SEGUNDO parámetro opcional con la firma EXACTA
+  `createChatStore(client: OllamaClient = createOllamaClient(CONFIG.ollama), webllm:
+  ChatStreamEngine = getWebLlmClient())` — en producción, `send()` con `k==="webllm"`
+  streamea contra la MISMA instancia (identidad de objeto) sobre la que `engineStore`
+  ejecutó `load()`. **Ni SF1 ni SF2 requieren ajuste alguno (ni de forma ni de
+  lógica)**: el bloque del singleton ya estaba asignado a SF3 por §9.4.3 y ningún tipo
+  cerrado cambia; las llamadas existentes `createChatStore()`/`createChatStore(fake)`
+  de S9–S11 siguen compilando y comportándose igual.
 - **CA**: CA-44 (paridad completa CA-21/22/23/24/27 vía WebGPU), CA-45 (avisos en el
   hilo), CA-46; regresión CA-19/20/25/26 (CA-25 con la excepción acotada de CA-47).
-- **Contratos**: consume C-ENGINE, C-WEBLLM y el delta C-ASSIST (todos cerrados).
-  Ejecuta además el cableado NORMATIVO del singleton `useEngineStore` (§9.4.3) — sin
-  alterar la firma de `createEngineStore`. Comparte `chatStore` con S9/S10/S11
-  (cerrados, en PASS) — solo se permite porque los contratos están fijos.
+- **Contratos**: consume C-ENGINE, C-WEBLLM y el delta C-ASSIST (todos cerrados; incl.
+  §9.5.1 para la obtención del cliente warm). Ejecuta además el cableado NORMATIVO del
+  singleton `useEngineStore` + export `getWebLlmClient` (§9.4.3/§9.5.1) — sin alterar
+  la firma de `createEngineStore`. Comparte `chatStore` con S9/S10/S11 (cerrados, en
+  PASS) — solo se permite porque los contratos están fijos.
 - **Toca**: `src/assistant/chatStore.ts`, `src/components/ChatPanel.tsx`,
   `src/components/StatusBadge.tsx` (retirada de `isChatInputDisabled`),
-  `src/app/Layout.tsx` (prop de ChatPanel), `src/assistant/engineStore.ts` (SOLO la
-  línea del singleton `useEngineStore`, §9.4.3), specs de `webllmClient` (SOLO añade el
+  `src/app/Layout.tsx` (prop de ChatPanel), `src/assistant/engineStore.ts` (SOLO el
+  bloque del singleton: const `webLlmClient` + `useEngineStore` + export
+  `getWebLlmClient`, §9.4.3/§9.5.1), specs de `webllmClient` (SOLO añade el
   test del invariante de config §9.3.1 — la implementación de SF1 no se toca), tests
   afectados de S9.
 - **Depende de**: SF1, SF2 (ambos en PASS) + S9/S10/S11 (en PASS).
-- **Tests**: store con AMBOS clientes fake: con `connected` ⇒ el send va al cliente
+- **Tests**: store con AMBOS clientes fake, inyectados vía
+  `createChatStore(fakeOllama, fakeWebllm)` (§9.5.1; el fake webllm solo necesita
+  `chatStream`): con `connected` ⇒ el send va al cliente
   Ollama (request a `/ollama`, CA-46 verificable); degradado + `ready` ⇒ va al cliente
   WebLLM; una generación en curso NO se corta al conmutar en ningún sentido (CA-46);
   avisos: degradado→`ready` ⇒ aviso que nombra WebGPU en ≤10 s; `ready`→`connected` ⇒
@@ -546,13 +568,15 @@ en verde. Fin del enriquecimiento según PRD §12.
   SIN aviso (CA-45); el historial enviado al motor excluye mensajes con `aviso`;
   paridad: prompt vía WebLLM incluye módulo actual y ragHits no vacíos (CA-23/24 ⇒
   CA-44); stop ≤2 s con parcial visible (CA-22); feedback Feynman vía WebLLM (CA-27);
-  ≥2 actualizaciones incrementales (CA-21); **cableado §9.4.3 (OBLIGATORIO)**: con
-  `@/assistant/webllmClient` sustituido por un doble (module mock) antes de importar
+  ≥2 actualizaciones incrementales (CA-21); **cableado §9.4.3/§9.5.1 (OBLIGATORIO)**:
+  con `@/assistant/webllmClient` sustituido por un doble (module mock) antes de importar
   `engineStore`, (a) `createWebLlmClient` se invoca EXACTAMENTE una vez con
-  `CONFIG.webllm` y (b) el singleton enruta a esa instancia —
+  `CONFIG.webllm`, (b) el singleton enruta a esa instancia —
   `setOllamaStatus("disconnected")` con `enabled=true` acaba invocando `detectSupport()`
   del doble (el guard "sin cliente ⇒ unsupported permanente" ya no gobierna el store de
-  producción); **invariante de config §9.3.1 (follow-up de SF1, solo test)**: override
+  producción) — y (c) `getWebLlmClient()` devuelve exactamente (`===`) esa misma
+  instancia (invariante de identidad del que depende CA-44, §9.5.1);
+  **invariante de config §9.3.1 (follow-up de SF1, solo test)**: override
   parcial (solo `modelUrl` o solo `modelLibUrl`) ⇒ se ignora el override completo, se
   usa `prebuiltAppConfig` y se emite `console.warn`; e2e con mocks de ambos motores
   (caída de Ollama simulada ⇒ oferta ⇒ activación fake ⇒ chat ⇒ recuperación ⇒ retorno).
@@ -564,7 +588,8 @@ recuperación de Ollama → retorno automático con aviso (CA-45/46); regresión
 CA-18..CA-27 (CA-19/20 con fallback deshabilitado y con WebGPU no soportado, CA-41);
 verificación de red (Playwright): 0 requests externas salvo GET de artefactos tras
 aceptar la oferta y 0 con modelo cacheado (CA-47/CA-25); test de contrato del model id
-(CA-48/R14); test de cableado del singleton (§9.4.3) y test del invariante de config
+(CA-48/R14); test de cableado del singleton (§9.4.3, incl. identidad de
+`getWebLlmClient()` §9.5.1) y test del invariante de config
 (§9.3.1) en verde; smoke manual documentado con GPU real + Ollama real (apagar/encender
 `ollama serve` durante una sesión). Build y e2e en verde. Fin del fallback según PRD §13.
 

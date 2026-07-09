@@ -17,6 +17,12 @@
 > sin normativizar — §9.3.1 (clasificación gpu/red e invariante de config) y §9.4.3
 > (cableado del singleton de producción). Son aclaraciones normativas hacia adelante:
 > SF1 y SF2 siguen en PASS; el cableado y el test pendiente se asignan a SF3.
+>
+> **Adenda 2026-07-09 (pre-implementación SF3):** se cierra un tercer hueco, detectado
+> por el test-author de SF3 — §9.5.1: CÓMO `chatStore.send()` obtiene la instancia
+> "warm" del `WebLlmClient` (la del singleton, vía el export `getWebLlmClient()` de
+> `engineStore.ts`; el bloque literal de §9.4.3 queda REVISADO a tres líneas, misma
+> semántica de cableado). SF1 y SF2 siguen en PASS sin cambios.
 
 ---
 
@@ -58,7 +64,8 @@ src/assistant/
   webllmClient.ts       NUEVO (SF1): implementación de C-WEBLLM
   webllm.worker.ts      NUEVO (SF1): worker oficial (new WebWorkerMLCEngineHandler())
   engineStore.ts        NUEVO (SF2): máquina de estados C-ENGINE (zustand, SIN persist);
-                        SF3 cablea el singleton useEngineStore con el cliente real (§9.4.3)
+                        SF3 cablea el singleton useEngineStore con el cliente real
+                        (§9.4.3) + exporta getWebLlmClient (§9.5.1)
   useAssistantEngine.ts NUEVO (SF2): hook fino; ÚNICA instancia, en Layout
   ollamaClient.ts       SIN CAMBIOS
   useOllamaStatus.ts    SIN CAMBIOS (única fuente del estado Ollama, ADR-10)
@@ -79,7 +86,9 @@ salvo en hooks finos (`useAssistantEngine` es análogo a `useOllamaStatus`); nin
 carpeta nueva ni dependencia nueva entre carpetas; la UI consume el estado combinado vía
 `useAssistantEngine` UNA sola vez en `Layout` y lo pasa por props (misma nota del
 reviewer de S8: un solo polling). `chatStore` lee `useEngineStore.getState()` (misma
-mecánica intra-carpeta que ya usa con el cliente Ollama). El worker WebLLM se instancia
+mecánica intra-carpeta que ya usa con el cliente Ollama) y obtiene el `WebLlmClient` de
+producción vía `getWebLlmClient()` del mismo módulo (§9.5.1; NUNCA construye el suyo
+propio). El worker WebLLM se instancia
 igual que el de Pyodide: `new Worker(new URL("./webllm.worker.ts", import.meta.url),
 { type: "module" })` (vite `worker.format: "es"` ya configurado).
 
@@ -277,6 +286,9 @@ export interface EngineState {
 }
 export declare function createEngineStore(client?: WebLlmClient) /* : store zustand */;
 export declare const useEngineStore /* : store zustand por defecto de la app (cableado NORMATIVO: §9.4.3) */;
+/** Instancia de PRODUCCIÓN del WebLlmClient: la MISMA (identidad de objeto) inyectada
+ *  en useEngineStore — la que load() deja "warm" (§9.4.3/§9.5.1). */
+export declare function getWebLlmClient(): WebLlmClient;
 ```
 
 ### 9.4.1 Máquina de estados NORMATIVA (la implementa `engineStore`, SF2)
@@ -327,19 +339,26 @@ app vía `useAssistantEngine()` en `Layout`. Resolución:
   red/GPU). Existe SOLO para tests y como default interino de SF2; el singleton de
   producción NO debe quedarse así (con él, el fallback nunca se activaría aunque el
   navegador soporte WebGPU).
-- **Quién y cómo (lo ejecuta SF3):** SF3 cambia la línea del singleton en
-  `src/assistant/engineStore.ts` a, literalmente:
+- **Quién y cómo (lo ejecuta SF3; bloque REVISADO 2026-07-09 por §9.5.1 — se añade el
+  export `getWebLlmClient`, misma semántica de cableado):** SF3 cambia la línea del
+  singleton en `src/assistant/engineStore.ts` al bloque, literalmente:
 
   ```ts
-  export const useEngineStore = createEngineStore(createWebLlmClient(CONFIG.webllm));
+  const webLlmClient = createWebLlmClient(CONFIG.webllm);
+  export const useEngineStore = createEngineStore(webLlmClient);
+  /** Instancia ÚNICA de producción del WebLlmClient: la MISMA (identidad de objeto)
+   *  inyectada en useEngineStore — la que load() deja "warm" (§9.5.1). */
+  export function getWebLlmClient(): WebLlmClient {
+    return webLlmClient;
+  }
   ```
 
   con imports intra-carpeta de `./webllmClient` y de `@/config` (permitidos por las
   reglas de §9.2; el módulo sigue sin importar React). Es seguro en import-time:
   `createWebLlmClient` es INERTE hasta `load()` — construirlo no crea worker, ni toca
   red, ni GPU (verificado en la implementación de SF1); la primera acción real solo
-  ocurre vía la máquina §9.4.1 (E3/E5). Este es el ÚNICO cambio permitido a
-  `engineStore.ts` dentro de SF3; la firma de `createEngineStore` no cambia.
+  ocurre vía la máquina §9.4.1 (E3/E5). Estas TRES líneas son el ÚNICO cambio permitido
+  a `engineStore.ts` dentro de SF3; la firma de `createEngineStore` no cambia.
 - **Por qué SF3 y no otro punto:** SF3 ya exige SF1+SF2 en PASS (el cliente real
   existe) y es el slice que hace fluir el chat real por WebLLM — sin este cableado,
   CA-40..CA-46 serían inverificables en la app real. Alternativas descartadas: cablear
@@ -350,11 +369,13 @@ app vía `useAssistantEngine()` en `Layout`. Resolución:
   fake inyectado; NO prueban el singleton de producción. SF3 añade un test que, con el
   módulo `@/assistant/webllmClient` sustituido por un doble (module mock) ANTES de
   importar `engineStore`, verifica: (a) `createWebLlmClient` fue invocada EXACTAMENTE
-  una vez con `CONFIG.webllm`; y (b) el singleton enruta a ESA instancia — con
+  una vez con `CONFIG.webllm`; (b) el singleton enruta a ESA instancia — con
   `CONFIG.webllm.enabled === true`,
   `useEngineStore.getState().setOllamaStatus("disconnected")` acaba invocando
   `detectSupport()` del doble (demuestra que el guard "sin cliente ⇒ unsupported
-  permanente" ya no gobierna el store de producción).
+  permanente" ya no gobierna el store de producción); y (c) `getWebLlmClient()`
+  devuelve exactamente (`===`) esa misma instancia (invariante de identidad de §9.5.1,
+  del que depende CA-44).
 
 ## 9.5 Delta ADITIVO de C-ASSIST (`src/assistant/types.ts`)
 
@@ -384,7 +405,8 @@ export interface ChatState {
 1. `k = useEngineStore.getState().engine.active` **en el momento del envío** (ADR-19).
    `k === null` ⇒ no-op (el input ya está deshabilitado por `isChatEnabled`).
 2. Cliente: `k === "ollama"` ⇒ `OllamaClient` (S8, sin cambios; request a `/ollama`,
-   verificable, CA-46) · `k === "webllm"` ⇒ `WebLlmClient`.
+   verificable, CA-46) · `k === "webllm"` ⇒ `WebLlmClient` — la instancia "warm" del
+   singleton, obtenida según §9.5.1 (NUNCA una instancia propia).
 3. `buildPrompt` es **IDÉNTICO** para ambos motores (RAG + módulo actual + system A-08):
    CA-44 hereda CA-23/24 sin código nuevo; `sendFeynmanFeedback` reusa `send` ⇒ CA-27
    funciona con ambos motores sin cambios.
@@ -406,6 +428,94 @@ export interface ChatState {
     `.aOllama`, que nombra el motor entrante) y `lastAnnounced = k`.
 - cambios a `null` NO anuncian (el estado terminal ya es visible en el badge).
 - Presupuesto CA-45: ≤10 s desde la detección del cambio (en la práctica, síncrono).
+
+### 9.5.1 Obtención del `WebLlmClient` "warm" por `chatStore` (NORMATIVO — cerrado 2026-07-09, pre-implementación SF3)
+
+**Hueco (detectado por el test-author de SF3):** la regla 2 de §9.5 fija QUÉ tipo de
+cliente usa `send()` según `k`, pero no CÓMO obtiene la instancia de `WebLlmClient`. El
+patrón existente de Ollama — `chatStore` construye su PROPIA instancia:
+`client: OllamaClient = createOllamaClient(CONFIG.ollama)` — NO es trasladable:
+`OllamaClient` es stateless por request (cada `chatStream` es una llamada HTTP
+independiente), mientras que `WebLlmClient` es stateful — la instancia inyectada en
+`useEngineStore` es la ÚNICA sobre la que `engineStore` ejecutó `load()` para llegar a
+`"ready"` (modelo cargado en SU worker: "warm"). Una segunda instancia creada con
+`createWebLlmClient(CONFIG.webllm)` estaría "cold": su `chatStream` fallaría con
+`onError({kind:"engine", ...})` (engine no cargado, §9.3) o exigiría un segundo
+`load()` no contemplado por ningún CA (worker/descarga duplicados) — rompería CA-44 en
+producción aunque los unit tests con fakes compartidos manualmente pasaran.
+
+**Decisión — opción (A): accessor del singleton, mínimo blast radius.** El módulo del
+singleton (`src/assistant/engineStore.ts`) exporta, junto a `useEngineStore`, un
+accessor de la MISMA instancia — patrón ya establecido en el repo (`getPyRunner()` de
+C-RUNNER). El bloque de cableado completo (revisado) es el de §9.4.3; la parte nueva es
+exactamente:
+
+```ts
+// src/assistant/engineStore.ts (dentro del bloque §9.4.3)
+export function getWebLlmClient(): WebLlmClient {
+  return webLlmClient; // la MISMA instancia inyectada en useEngineStore
+}
+```
+
+**Consumo en `chatStore` (SF3) — firma EXACTA:** la factory gana un SEGUNDO parámetro
+opcional, con el mismo mecanismo de inyección para tests que ya usa con `OllamaClient`
+(las llamadas existentes `createChatStore()` / `createChatStore(fakeOllama)` de S9–S11
+siguen compilando y comportándose igual — el parámetro nuevo es opcional y posterior):
+
+```ts
+// src/assistant/chatStore.ts (SF3)
+import { getWebLlmClient } from "@/assistant/engineStore";
+
+export function createChatStore(
+  client: OllamaClient = createOllamaClient(CONFIG.ollama), // sin cambios (S9)
+  webllm: ChatStreamEngine = getWebLlmClient(),             // NUEVO (M5)
+) /* : store zustand, igual que hoy */;
+
+export const useChatStore = createChatStore();              // sin cambios
+```
+
+`send()` con `k === "ollama"` streamea contra `client` (sin cambios); con
+`k === "webllm"`, contra `webllm`. El parámetro se tipa `ChatStreamEngine` (no
+`WebLlmClient`): §9.3 exige que `chatStore` programe contra la interfaz común, y un
+fake de tests solo necesita implementar `chatStream`.
+
+**Reglas normativas:**
+
+1. `chatStore` NO importa `createWebLlmClient` ni construye instancias de
+   `WebLlmClient` bajo ninguna circunstancia. El patrón "instancia propia" de Ollama NO
+   se extiende a WebLLM.
+2. **Invariante de identidad:** `getWebLlmClient()` devuelve exactamente (`===`) la
+   instancia inyectada en `useEngineStore`. Cadena de corrección de CA-44:
+   `active === "webllm"` ⇒ `phase === "ready"` (`selectActiveEngine`) ⇒ `load()`
+   resolvió sobre ESA instancia ⇒ el `chatStream` de `send()` va a un engine cargado.
+3. Import-time seguro y sin ciclos: los defaults de `createChatStore()` se evalúan al
+   crear `useChatStore`; `getWebLlmClient()` solo devuelve la instancia INERTE de
+   §9.4.3 (0 worker/red/GPU hasta `load()`). Grafo de imports:
+   `chatStore → engineStore → webllmClient/config`; `engineStore` NO importa
+   `chatStore` (la suscripción de avisos de §9.5 la hace `chatStore` sobre
+   `useEngineStore`, misma dirección).
+4. Test OBLIGATORIO (SF3): el inciso (c) del test de cableado de §9.4.3 —
+   `getWebLlmClient()` devuelve la MISMA instancia (identidad) que produjo la factory
+   mockeada y a la que el singleton enruta.
+
+**Alternativas descartadas:**
+
+- **(B) Exponer el cliente en `AssistantEngine`/`EngineState`:** cambia la forma de un
+  tipo cerrado (§9.4) consumido por SF2 (en PASS) y por la UI vía props — metería un
+  objeto stateful no serializable en un snapshot de presentación (`StatusBadge`/
+  `WebGpuFallbackCard`/`ChatPanel`) y obligaría a un ajuste de forma en SF2 sin
+  beneficio alguno.
+- **(C) Que C-ENGINE exponga el streaming (método del store que enruta al cliente
+  correcto):** `engineStore` no conoce `OllamaClient` (vive en `chatStore` desde S9);
+  enrutar ambos motores desde el store movería la propiedad de C-OLLAMA y reabriría
+  diseño en PASS. La variante reducida (método `getClient()` DENTRO de `EngineState`)
+  también modifica un tipo cerrado que SF2 implementa. (A) no toca ningún tipo
+  cerrado: solo añade un export a un bloque (§9.4.3) que ya estaba asignado a SF3.
+
+**Impacto en slices en PASS: NINGUNO.** SF1 no se toca; SF2 no requiere ajuste ni de
+forma ni de lógica (el bloque del singleton en `engineStore.ts` ya era, por §9.4.3, un
+cambio asignado a SF3; solo pasa de una a tres líneas). Los tests de S9–S11 siguen
+compilando y verdes.
 
 ## 9.6 Delta de Configuración (`src/config.ts`, SF1)
 
@@ -574,7 +684,7 @@ descartada (petición externa pre-consentimiento). Decisión: `VITE_WEBLLM_MODEL
 |---|---|
 | CA-40, CA-41 | `assistant/engineStore` + `useAssistantEngine` + `components/WebGpuFallbackCard` (+ `CONFIG.webllm.enabled`) |
 | CA-42, CA-43 | `assistant/webllmClient` (progreso/cancel) + `engineStore` + `WebGpuFallbackCard` |
-| CA-44 | `assistant/chatStore` (selección por mensaje) + `webllmClient.chatStream` + `promptBuilder` (SIN cambios) |
+| CA-44 | `assistant/chatStore` (selección por mensaje; instancia "warm" vía `getWebLlmClient`, §9.5.1) + `webllmClient.chatStream` + `promptBuilder` (SIN cambios) |
 | CA-45 | `components/StatusBadge` (label) + `chatStore.appendEngineNotice` + `app/strings` (§9.7) |
 | CA-46 | `selectActiveEngine` + `chatStore` (ADR-19) + `engineStore` (E1: fetching no se aborta) |
 | CA-47 | ADR-18 + e2e de red (Playwright, `e2e/`) |
