@@ -50,10 +50,19 @@
  *    `load()` (no hay convención de forma/mensaje de error documentada).
  *    Aquí solo se testea el caso `"gpu"` (SU-11, explícito en SLICES.md
  *    §SF1); no se inventa una heurística para `"red"`.
- *  - El invariante "modelUrl y modelLibUrl: AMBOS o NINGUNO" (§9.3) no fija
- *    qué debe ocurrir si solo uno de los dos está definido (¿se ignora el
- *    override? ¿se lanza?). No se testea ese caso parcial aquí ni en
- *    `config.test.ts` para no fijar un comportamiento no especificado.
+ *
+ * ---------------------------------------------------------------------------
+ * FOLLOW-UP DE SF3 (§9.3.1, "Enforcement del invariante modelUrl/modelLibUrl
+ * (ambos o ninguno)", cerrado como NORMATIVO en la adenda 2026-07-09 de
+ * `ARCHITECTURE-M5-WEBLLM.md`): el test-author de SF1 excluyó deliberadamente
+ * el caso de override PARCIAL (solo `modelUrl` o solo `modelLibUrl`) por no
+ * estar normativizado en ese momento. Ahora SÍ lo está — ratificado tal como
+ * ya lo hace la implementación de SF1 (sin tocarla): un override parcial se
+ * trata como configuración inválida, se IGNORA por completo (se cae a
+ * `prebuiltAppConfig`, ADR-18) y se emite un único `console.warn` de
+ * diagnóstico que nombra ambas claves env. Ver el describe
+ * "invariante de config §9.3.1" al final de este archivo.
+ * ---------------------------------------------------------------------------
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -513,5 +522,132 @@ describe("chatStream — paridad C-OLLAMA (CA-44)", () => {
 
     expect(captured).not.toBeNull();
     expect((captured as unknown as EngineStreamError).kind).toBe("engine");
+  });
+});
+
+/**
+ * FOLLOW-UP asignado a SF3 (SLICES.md §SF3, "invariante de config §9.3.1"):
+ * único test nuevo de este archivo. NO se toca `webllmClient.ts` — el
+ * comportamiento ya está implementado (`buildAppConfig`, con su comentario
+ * "AMBIGÜEDAD DE CONTRATO" ahora resuelto/ratificado por el architect); este
+ * describe solo lo ancla con tests deterministas.
+ */
+describe("invariante de config §9.3.1 — modelUrl/modelLibUrl: AMBOS o NINGUNO (follow-up SF3)", () => {
+  it("solo modelUrl definido (modelLibUrl vacío) ⇒ ignora el override completo, usa prebuiltAppConfig y avisa por consola", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const partialConfig: WebLlmConfig = {
+      ...BASE_CONFIG,
+      modelUrl: "https://intranet.example.com/modelos/qwen-1.5b/",
+      modelLibUrl: "",
+    };
+    const engine = createFakeEngine();
+    mocks.createEngine.mockImplementation(
+      async (_worker: unknown, modelId: string, options: FakeEngineConfigOptions) => {
+        expect(modelId).toBe(FAKE_MODEL_ID);
+        // Debe caer a prebuiltAppConfig (el fixture mockeado más arriba), NUNCA a
+        // una entrada custom construida solo con modelUrl.
+        expect(options.appConfig?.model_list).toEqual([
+          {
+            model_id: FAKE_MODEL_ID,
+            model: "https://huggingface.co/mlc-ai/fake-prebuilt",
+            model_lib: "https://raw.githubusercontent.com/mlc-ai/fake-prebuilt.wasm",
+          },
+        ]);
+        options.initProgressCallback({ progress: 1, text: "listo" });
+        return engine;
+      },
+    );
+
+    const client = createWebLlmClient(partialConfig);
+    await client.load(() => undefined);
+
+    expect(mocks.createEngine).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const warningMessage = String(warnSpy.mock.calls[0]?.[0] ?? "");
+    expect(warningMessage).toMatch(/VITE_WEBLLM_MODEL_URL/);
+    expect(warningMessage).toMatch(/VITE_WEBLLM_MODEL_LIB_URL/);
+
+    warnSpy.mockRestore();
+  });
+
+  it("solo modelLibUrl definido (modelUrl vacío) ⇒ mismo comportamiento (simétrico)", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const partialConfig: WebLlmConfig = {
+      ...BASE_CONFIG,
+      modelUrl: "",
+      modelLibUrl: "https://intranet.example.com/wasm/qwen-1.5b.wasm",
+    };
+    const engine = createFakeEngine();
+    mocks.createEngine.mockImplementation(
+      async (_worker: unknown, modelId: string, options: FakeEngineConfigOptions) => {
+        expect(modelId).toBe(FAKE_MODEL_ID);
+        expect(options.appConfig?.model_list).toEqual([
+          {
+            model_id: FAKE_MODEL_ID,
+            model: "https://huggingface.co/mlc-ai/fake-prebuilt",
+            model_lib: "https://raw.githubusercontent.com/mlc-ai/fake-prebuilt.wasm",
+          },
+        ]);
+        options.initProgressCallback({ progress: 1, text: "listo" });
+        return engine;
+      },
+    );
+
+    const client = createWebLlmClient(partialConfig);
+    await client.load(() => undefined);
+
+    expect(mocks.createEngine).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+
+    warnSpy.mockRestore();
+  });
+
+  it("el mismo invariante aplica a isModelCached (hasModelInCache recibe prebuiltAppConfig, no un override parcial)", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const partialConfig: WebLlmConfig = {
+      ...BASE_CONFIG,
+      modelUrl: "https://intranet.example.com/modelos/qwen-1.5b/",
+      modelLibUrl: "",
+    };
+    mocks.hasModelInCache.mockResolvedValue(false);
+
+    const client = createWebLlmClient(partialConfig);
+    await client.isModelCached();
+
+    expect(mocks.hasModelInCache).toHaveBeenCalledTimes(1);
+    const [calledModel, calledAppConfig] = mocks.hasModelInCache.mock.calls[0] as [
+      string,
+      { model_list: Array<{ model_id: string; model?: string; model_lib?: string }> },
+    ];
+    expect(calledModel).toBe(FAKE_MODEL_ID);
+    expect(calledAppConfig.model_list).toEqual([
+      {
+        model_id: FAKE_MODEL_ID,
+        model: "https://huggingface.co/mlc-ai/fake-prebuilt",
+        model_lib: "https://raw.githubusercontent.com/mlc-ai/fake-prebuilt.wasm",
+      },
+    ]);
+
+    warnSpy.mockRestore();
+  });
+
+  it("NO avisa por consola cuando el override está completo (ambos definidos) ni cuando está vacío (ninguno)", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    // Ninguno definido (BASE_CONFIG ya tiene ambos vacíos).
+    mocks.hasModelInCache.mockResolvedValue(false);
+    await createWebLlmClient(BASE_CONFIG).isModelCached();
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    // Ambos definidos (override completo válido).
+    const fullOverride: WebLlmConfig = {
+      ...BASE_CONFIG,
+      modelUrl: "https://intranet.example.com/modelos/qwen-1.5b/",
+      modelLibUrl: "https://intranet.example.com/wasm/qwen-1.5b.wasm",
+    };
+    await createWebLlmClient(fullOverride).isModelCached();
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    warnSpy.mockRestore();
   });
 });

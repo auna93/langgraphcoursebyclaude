@@ -84,6 +84,11 @@ export interface ChatUiMessage {
   role: "user" | "assistant";
   content: string;
   error?: string;
+  /** M5 (CA-45): presente SOLO en avisos de conmutación de motor. Un aviso NUNCA entra
+   *  en el historial que se envía al modelo (buildPrompt no lo ve). */
+  aviso?: "cambio_motor";
+  /** M5: motor que generó este mensaje assistant (transparencia/trazabilidad). */
+  engine?: EngineKind;
 }
 
 /** chatStore (zustand, persist en sessionStorage clave "lgcourse.chat.v1" — US-16). */
@@ -96,6 +101,9 @@ export interface ChatState {
   stop(): void;
   clear(): void;
   sendFeynmanFeedback(moduleId: ModuleId): void;
+  /** M5 (CA-45): añade al hilo el aviso de conmutación al motor `engine` (literal de
+   *  STRINGS.avisoCambioMotor). Síncrono; no streamea; no toca `generando`. */
+  appendEngineNotice(engine: EngineKind): void;
 }
 
 /**

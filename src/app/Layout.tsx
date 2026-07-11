@@ -17,8 +17,9 @@ import { useEngineStore } from "@/assistant/engineStore";
  * evitar polling duplicado de `/api/tags`; sigue siendo la única llamada a
  * `useOllamaStatus`, ahora compuesta con la fase del fallback WebLLM,
  * `docs/arch/ARCHITECTURE-M5-WEBLLM.md` §9.4.2) y se pasa por props a
- * `StatusBadge`/`WebGpuFallbackCard`. `ChatPanel` sigue recibiendo
- * `engine.ollama` como interino hasta que SF3 cablee `isChatEnabled`.
+ * `StatusBadge`/`WebGpuFallbackCard`/`ChatPanel` (desde SF3, §9.8:
+ * `ChatPanel` recibe el snapshot `engine` completo y gatea vía
+ * `isChatEnabled(engine)`).
  *
  * `id="asistente-sidebar"` (slice S11, CA-27): único punto de la app donde
  * vive el sidebar, usado por `FeynmanEditor` para desplazarlo a la vista
@@ -62,7 +63,7 @@ export function Layout() {
             />
           </div>
           <div className="mt-2 flex min-h-0 flex-1 flex-col">
-            <ChatPanel status={engine.ollama} />
+            <ChatPanel engine={engine} />
           </div>
         </aside>
       </div>

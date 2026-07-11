@@ -1,28 +1,34 @@
 import { useState } from "react";
 
 import { STRINGS } from "@/app/strings";
-import { isChatInputDisabled } from "@/components/StatusBadge";
-import type { OllamaStatus } from "@/assistant/types";
+import { isChatEnabled } from "@/assistant/engineStore";
+import type { AssistantEngine } from "@/assistant/types";
 import { useChatStore } from "@/assistant/chatStore";
 
 /**
  * `ChatPanel`: UI del chat del asistente (C-ASSIST), slice S9 — CA-21
  * (render incremental durante el streaming), CA-22 (botón "detener" con
  * abort, parcial visible), CA-26 (mensaje de error en español + instrucción
- * de recuperación tras un fallo a mitad de stream).
+ * de recuperación tras un fallo a mitad de stream). Desde SF3 (M5,
+ * `docs/arch/ARCHITECTURE-M5-WEBLLM.md` §9.8): habilitación vía
+ * `isChatEnabled(engine)` (sustituye a `isChatInputDisabled(status)`,
+ * retirada de `StatusBadge`), paridad con el motor de respaldo WebGPU
+ * (CA-44).
  *
  * Consume `chatStore` (S9, `send`/`stop`/`clear`) tal cual está definido en
- * el contrato C-ASSIST; no reimplementa streaming ni parsing aquí. El
- * `status` de conexión con Ollama (C-OLLAMA) se recibe por prop desde
- * `Layout` — UN solo punto de la app llama a `useOllamaStatus` (nota del
- * reviewer de S8: evitar polling duplicado de `/api/tags`).
+ * el contrato C-ASSIST; no reimplementa streaming ni parsing aquí. El motor
+ * REAL usado por `send()` se decide dentro de `chatStore` (ADR-19, §9.5),
+ * independientemente de esta prop; `engine` aquí SOLO gatea la UI. Se recibe
+ * por prop desde `Layout` — UN solo punto de la app llama a
+ * `useAssistantEngine` (nota del reviewer de S8: evitar polling duplicado de
+ * `/api/tags`).
  */
 
 export interface ChatPanelProps {
-  status: OllamaStatus;
+  engine: AssistantEngine;
 }
 
-export function ChatPanel({ status }: ChatPanelProps) {
+export function ChatPanel({ engine }: ChatPanelProps) {
   const mensajes = useChatStore((s) => s.mensajes);
   const generando = useChatStore((s) => s.generando);
   const send = useChatStore((s) => s.send);
@@ -31,7 +37,7 @@ export function ChatPanel({ status }: ChatPanelProps) {
 
   const [texto, setTexto] = useState("");
 
-  const disabled = isChatInputDisabled(status);
+  const disabled = !isChatEnabled(engine);
   const t = STRINGS.asistente.chatPanel;
 
   function handleSubmit(e: React.FormEvent) {
@@ -52,21 +58,34 @@ export function ChatPanel({ status }: ChatPanelProps) {
         {mensajes.length === 0 && (
           <p className="text-sm text-muted-foreground">{t.historialVacio}</p>
         )}
-        {mensajes.map((m, idx) => (
-          <div key={idx} data-testid={`chat-message-${m.role}`} className="text-sm">
-            <span className="font-semibold">
-              {m.role === "user" ? t.tuMensajeLabel : t.asistenteMensajeLabel}
-            </span>{" "}
-            <span className="whitespace-pre-wrap" data-testid="chat-message-content">
-              {m.content}
-            </span>
-            {m.error && (
-              <p role="alert" className="mt-1 text-xs text-red-700 dark:text-red-400">
-                {m.error}
-              </p>
-            )}
-          </div>
-        ))}
+        {mensajes.map((m, idx) =>
+          // M5 (§9.8): los mensajes con `aviso` (conmutación de motor, CA-45)
+          // se renderizan como nota de sistema diferenciada, sin el label de
+          // rol ni el bloque de error de una respuesta normal.
+          m.aviso ? (
+            <p
+              key={idx}
+              data-testid="chat-message-aviso"
+              className="rounded border border-border bg-muted px-2 py-1 text-xs italic text-muted-foreground"
+            >
+              <span data-testid="chat-message-content">{m.content}</span>
+            </p>
+          ) : (
+            <div key={idx} data-testid={`chat-message-${m.role}`} className="text-sm">
+              <span className="font-semibold">
+                {m.role === "user" ? t.tuMensajeLabel : t.asistenteMensajeLabel}
+              </span>{" "}
+              <span className="whitespace-pre-wrap" data-testid="chat-message-content">
+                {m.content}
+              </span>
+              {m.error && (
+                <p role="alert" className="mt-1 text-xs text-red-700 dark:text-red-400">
+                  {m.error}
+                </p>
+              )}
+            </div>
+          ),
+        )}
         {generando && (
           <p className="text-xs text-muted-foreground">{t.generando}</p>
         )}

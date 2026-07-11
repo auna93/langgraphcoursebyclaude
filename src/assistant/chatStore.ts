@@ -12,17 +12,28 @@
  * `buildFeynmanFeedbackMessage` (título del módulo + explicación guardada en
  * `progress/`, C-PROGRESS) y lo envía reusando `send` — mismo pipeline de
  * streaming, mismas garantías CA-21, sin duplicar lógica de red/parsing.
+ *
+ * Slice SF3 (delta C-ASSIST, `docs/arch/ARCHITECTURE-M5-WEBLLM.md` §9.5):
+ * selección de motor POR MENSAJE en `send()` (ADR-19) leyendo
+ * `useEngineStore.getState().engine.active`; el cliente WebLLM "warm" se
+ * obtiene vía `getWebLlmClient()` de `@/assistant/engineStore` (§9.5.1) —
+ * NUNCA se construye una instancia propia con `createWebLlmClient`. Avisos
+ * de conmutación (`appendEngineNotice`) se disparan desde una suscripción a
+ * `useEngineStore` (regla normativa de avisos, §9.5).
  */
 
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
+import { getWebLlmClient, useEngineStore } from "@/assistant/engineStore";
 import { createOllamaClient } from "@/assistant/ollamaClient";
 import { buildFeynmanFeedbackMessage, buildPrompt } from "@/assistant/promptBuilder";
 import type {
   ChatMessage,
   ChatState,
+  ChatStreamEngine,
   ChatUiMessage,
+  EngineKind,
   OllamaClient,
 } from "@/assistant/types";
 import { STRINGS } from "@/app/strings";
@@ -57,16 +68,28 @@ export const CHAT_STORAGE_KEY = "lgcourse.chat.v1";
  */
 let currentController: AbortController | null = null;
 
+/** §9.5 regla 4: el historial enviado al motor excluye los mensajes con
+ *  `aviso` (un aviso de conmutación NUNCA entra en el prompt del modelo). */
 function toChatMessages(mensajes: ChatUiMessage[]): ChatMessage[] {
-  return mensajes.map((m) => ({ role: m.role, content: m.content }));
+  return mensajes.filter((m) => !m.aviso).map((m) => ({ role: m.role, content: m.content }));
 }
 
 /**
  * Fábrica de la implementación real, inyectable para tests (evita mockear
- * `fetch` global en los unitarios del store).
+ * `fetch` global en los unitarios del store). Firma EXACTA de §9.5.1: el
+ * segundo parámetro (motor WebLLM "warm") es opcional y posterior, así que
+ * las llamadas `createChatStore()`/`createChatStore(fake)` de S9–S11 siguen
+ * compilando y comportándose igual.
  */
-export function createChatStore(client: OllamaClient = createOllamaClient(CONFIG.ollama)) {
-  return create<ChatState>()(
+export function createChatStore(
+  client: OllamaClient = createOllamaClient(CONFIG.ollama),
+  webllm: ChatStreamEngine = getWebLlmClient(),
+) {
+  /** Memoria de sesión de página (NO persistida) del último motor anunciado
+   *  en el hilo — regla normativa de avisos, §9.5. */
+  let lastAnnounced: EngineKind | null = null;
+
+  const store = create<ChatState>()(
     persist(
       (set, get) => ({
         mensajes: [],
@@ -76,6 +99,15 @@ export function createChatStore(client: OllamaClient = createOllamaClient(CONFIG
           const texto = pregunta.trim();
           if (texto.length === 0) return;
           if (get().generando) return;
+
+          // §9.5 regla 1: motor leído EN EL MOMENTO del envío (ADR-19).
+          // active === null ⇒ no-op (el input ya está deshabilitado por
+          // isChatEnabled).
+          const k = useEngineStore.getState().engine.active;
+          if (k === null) return;
+
+          // §9.5 regla 2: enrutado al cliente correcto según el motor.
+          const engineClient: ChatStreamEngine = k === "ollama" ? client : webllm;
 
           const historial = toChatMessages(get().mensajes);
 
@@ -101,42 +133,52 @@ export function createChatStore(client: OllamaClient = createOllamaClient(CONFIG
             ragHits,
           });
 
+          // §9.5 regla 5: el mensaje assistant creado lleva engine:k. Se
+          // localiza por IDENTIDAD de objeto (no por índice fijo): un aviso
+          // de conmutación puede insertarse A MITAD de este stream (CA-46) y
+          // `appendEngineNotice` lo hace SIEMPRE antes del mensaje en curso
+          // (ver más abajo) para no desplazar el "último mensaje" visible,
+          // pero localizar por referencia es robusto ante cualquier
+          // reordenamiento futuro.
+          let currentAssistantMsg: ChatUiMessage = { role: "assistant", content: "", engine: k };
+
           set((state) => ({
-            mensajes: [
-              ...state.mensajes,
-              { role: "user", content: texto },
-              { role: "assistant", content: "" },
-            ],
+            mensajes: [...state.mensajes, { role: "user", content: texto }, currentAssistantMsg],
             generando: true,
           }));
 
           const controller = new AbortController();
           currentController = controller;
 
-          function updateLastAssistant(fn: (msg: ChatUiMessage) => ChatUiMessage) {
+          function updateAssistantMessage(fn: (msg: ChatUiMessage) => ChatUiMessage) {
             set((state) => {
+              const idx = state.mensajes.indexOf(currentAssistantMsg);
+              if (idx === -1) return {};
               const mensajes = [...state.mensajes];
-              const idx = mensajes.length - 1;
-              if (idx < 0 || mensajes[idx].role !== "assistant") return {};
-              mensajes[idx] = fn(mensajes[idx]);
+              currentAssistantMsg = fn(mensajes[idx]);
+              mensajes[idx] = currentAssistantMsg;
               return { mensajes };
             });
           }
 
-          void client.chatStream(
+          void engineClient.chatStream(
             prompt,
             {
               onToken(t) {
-                updateLastAssistant((msg) => ({ ...msg, content: msg.content + t }));
+                updateAssistantMessage((msg) => ({ ...msg, content: msg.content + t }));
               },
               onDone() {
                 set({ generando: false });
                 currentController = null;
               },
               onError() {
-                updateLastAssistant((msg) => ({
+                // §9.5 regla 6: error string por motor.
+                updateAssistantMessage((msg) => ({
                   ...msg,
-                  error: STRINGS.asistente.chatPanel.errorStream,
+                  error:
+                    k === "ollama"
+                      ? STRINGS.asistente.chatPanel.errorStream
+                      : STRINGS.asistente.chatPanel.errorStreamWebGpu,
                 }));
                 set({ generando: false });
                 currentController = null;
@@ -156,6 +198,31 @@ export function createChatStore(client: OllamaClient = createOllamaClient(CONFIG
           currentController?.abort();
           currentController = null;
           set({ mensajes: [], generando: false });
+        },
+
+        appendEngineNotice(engine: EngineKind) {
+          const modelo =
+            engine === "webllm"
+              ? useEngineStore.getState().engine.webllm.model
+              : CONFIG.ollama.model;
+          const content =
+            engine === "webllm"
+              ? STRINGS.avisoCambioMotor.aWebGpu(modelo)
+              : STRINGS.avisoCambioMotor.aOllama(modelo);
+          const notice: ChatUiMessage = { role: "assistant", content, aviso: "cambio_motor" };
+          set((state) => {
+            // CA-46: una generación en curso nunca se corta ni se "tapa" por
+            // un aviso — el mensaje assistant que se está streameando debe
+            // seguir siendo el ÚLTIMO del hilo (p.ej. para un lector de
+            // "última respuesta"), así que el aviso se inserta justo ANTES
+            // en vez de al final mientras `generando === true`.
+            if (state.generando && state.mensajes.length > 0) {
+              const mensajes = [...state.mensajes];
+              mensajes.splice(mensajes.length - 1, 0, notice);
+              return { mensajes };
+            }
+            return { mensajes: [...state.mensajes, notice] };
+          });
         },
 
         // NOTA (implementer, S11): C-ASSIST fija `sendFeynmanFeedback(moduleId)`
@@ -197,6 +264,27 @@ export function createChatStore(client: OllamaClient = createOllamaClient(CONFIG
       },
     ),
   );
+
+  // Regla NORMATIVA de avisos (§9.5): se suscribe a los cambios de
+  // `engine.active` del engineStore. Solo TRANSICIONES reales disparan el
+  // aviso (el valor inicial de `active`, presente cuando se registra esta
+  // suscripción, nunca lo hace). El primer "ollama" de la sesión (desde
+  // `lastAnnounced === null`) es silencioso (arranque normal); los cambios a
+  // `null` tampoco anuncian (el estado terminal ya es visible en el badge).
+  useEngineStore.subscribe((state, prevState) => {
+    const k = state.engine.active;
+    if (k === prevState.engine.active) return;
+    if (k === null) return;
+    if (k === lastAnnounced) return;
+    if (lastAnnounced === null && k === "ollama") {
+      lastAnnounced = k;
+      return;
+    }
+    store.getState().appendEngineNotice(k);
+    lastAnnounced = k;
+  });
+
+  return store;
 }
 
 export const useChatStore = createChatStore();

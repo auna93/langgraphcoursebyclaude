@@ -72,8 +72,3 @@ export function StatusBadge({ engine }: StatusBadgeProps) {
     </div>
   );
 }
-
-/** Estado derivado para deshabilitar el input del chat (S9 lo consume). */
-export function isChatInputDisabled(status: OllamaStatus): boolean {
-  return status !== "connected";
-}

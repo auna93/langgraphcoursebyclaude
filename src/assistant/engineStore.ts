@@ -29,6 +29,7 @@
 
 import { create } from "zustand";
 
+import { createWebLlmClient } from "@/assistant/webllmClient";
 import type {
   AssistantEngine,
   EngineKind,
@@ -213,6 +214,12 @@ export function createEngineStore(client?: WebLlmClient) {
   });
 }
 
+const webLlmClient = createWebLlmClient(CONFIG.webllm);
 /** Store por defecto de la app (ÚNICA instancia; consumido por
  *  `useAssistantEngine` en `Layout` y, desde SF3, por `chatStore`). */
-export const useEngineStore = createEngineStore();
+export const useEngineStore = createEngineStore(webLlmClient);
+/** Instancia ÚNICA de producción del WebLlmClient: la MISMA (identidad de objeto)
+ *  inyectada en `useEngineStore` — la que `load()` deja "warm" (§9.5.1). */
+export function getWebLlmClient(): WebLlmClient {
+  return webLlmClient;
+}
