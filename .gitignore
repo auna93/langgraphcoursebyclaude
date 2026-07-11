@@ -10,7 +10,13 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+dist-webllm-disabled
 *.local
+
+# Artefactos sueltos de herramientas locales (p. ej. sqlite WAL/SHM de un
+# cliente MCP/editor) sin referencia en el código — housekeeping M5.
+*.tmp-*.json-shm
+*.tmp-*.json-wal
 
 # Assets de Pyodide, generados por `npm run copy-pyodide` (scripts/copy-pyodide.mjs)
 public/pyodide/*
